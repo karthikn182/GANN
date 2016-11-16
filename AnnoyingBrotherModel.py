@@ -5,18 +5,21 @@
 #2. Figure out concatenating in the right manner!
 #3. make sure train() function is correct
 
+import time
+import numpy as np
+import tensorflow as tf
+
 class AnnoyingBrotherConfig(object):
     """Define HyperParameters"""
     init_scale = 0.05
     learning_rate = 1.0
     max_grad_norm = 5
-    num_layers = 2
-    sequence_length = 5
-    hidden_size = 50
-    memory_dim = 100
-    max_epoch = 6
-    max_max_epoch = 39
-    keep_prob = 0.5
+    num_layers = 2 #Not Implemented: can be used to make Discriminator deeper (multi-LSTM cells)
+    sequence_length = 5 
+    hidden_size = 50 #size of one lstm cell
+    memory_dim = 100 #memory dimension for GRU cell in seq2seq
+    max_epoch = 2
+    keep_prob = 0.5 #for dropout, Not Implemented
     lr_decay = 0.8
     batch_size = 1
     input_vocab_size = 500
@@ -26,6 +29,7 @@ class AnnoyingBrotherConfig(object):
 class ABModel(object):
 
     def __init__(self,config):
+        print("initializing")
         #initialize model variables
         #Combine the generator and discriminator model
         self.lr = config.learning_rate
@@ -37,45 +41,61 @@ class ABModel(object):
         self.hidden_size = config.hidden_size
         self.memory_dim = config.memory_dim
         self.max_epoch = config.max_epoch
-        self.keep_prob = config.keep_prob
+        self.keep_prob = config.keep_prob #for dropout if we decide
 
         self.batch_size = config.batch_size
         self.input_vocab_size = config.input_vocab_size
         self.output_vocab_size = config.output_vocab_size
         self.d_output_vocab = 2
 
-        #INITIALIZING
+        #INITIALIZING GRAPH
         tf.reset_default_graph()
 
         #This initializer is used to initialize all the weights of the network (not done until train() is called)
         initializer = tf.truncated_normal_initializer(stddev=self.init_scale)
 
-        #These two placeholders are used for input into the generator and discriminator, respectively.
-        q_in = tf.placeholder(shape=[None,self.seq_length,1],dtype=tf.float32) #Question vector (None means any shape aka for batching,seq_length,word_dimension)
-        real_in = tf.placeholder(shape=[None,2*self.seq_length,1],dtype=tf.float32) #Real "Question/Answer" placeholder (none,2*seq_length,1)
+        #Define Generator variables
+        print("generator vars")
+        with tf.variable_scope("G") as scope:
+            #q_in = tf.placeholder(shape=[None,self.seq_length,1],dtype=tf.int32) #Question vector (batching,seq_length,word_dimension)
 
-        #Note need some answer HERE!
+            #Generator input placeholder: encoder_inputs are a list of tensors. len(list) = eq length
+            
+            enc_inp = [tf.placeholder(tf.int32, shape=(None,),
+                          name="inp%i" % t)
+                        for t in range(self.seq_length)]
+            
+            Gz = self.generator(enc_inp) #Generates answer from question input
 
-        Gz = generator(q_in) #Generates answer from question input
         #Only create the Discriminator Variables once!
-        with tf.variable_scope("generator") as scope:
-            Dx = discriminator(real_in) #Produces probabilities for real question/answer
+        print("discriminator vars")
+        with tf.variable_scope("D") as scope:
+            #Discriminator input placeholder (none,2*seq_length,1)
+            real_in = tf.placeholder(shape=[None,2*self.seq_length,1],dtype=tf.int32) #Real "Question/Answer" placeholder 
+            Dx = self.discriminator(real_in) #Produces probabilities for real question/answer
+            print("now trying to input G_out into Discriminator")
             scope.reuse_variables()
-            Dg = discriminator(tf.concat(q_in,Gz)) #Produces probabilities for generated question/answer pair
+            Dg = self.discriminator(tf.concat(1,[q_in,Gz])) #Produces probabilities for generated question/answer pair
 
 
         #These functions together define the optimization objective of the GAN.
         d_loss = -tf.reduce_mean(tf.log(Dx) + tf.log(1.-Dg)) #This optimizes the discriminator.
         g_loss = -tf.reduce_mean(tf.log(Dg)) #This optimizes the generator.
 
-        tvars = tf.trainable_variables() #Don't know how many variables this is
-        print(len(tvars))
+
 
         #The below code is responsible for applying gradient descent to update the GAN.
         trainerD = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
         trainerG = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
-        d_grads = trainerD.compute_gradients(d_loss,tvars[9:]) #Only update the weights for the discriminator network.
-        g_grads = trainerG.compute_gradients(g_loss,tvars[0:9]) #Only update the weights for the generator network.
+
+        tvars = tf.trainable_variables() #Don't know how many variables this is
+        print("tvars length: ",len(tvars))
+
+        d_params = [v for v in tvars if v.name.startswith('D/')]
+        g_params = [v for v in tvars if v.name.startswith('G/')]
+
+        d_grads = trainerD.compute_gradients(d_loss,d_params) #Only update the weights for the discriminator network.
+        g_grads = trainerG.compute_gradients(g_loss,g_params) #Only update the weights for the generator network.
 
         update_D = trainerD.apply_gradients(d_grads)
         update_G = trainerG.apply_gradients(g_grads)
@@ -84,6 +104,7 @@ class ABModel(object):
 
     #TRAINING
     def train(self,data):
+        print("training")
 
         batch_size = self.batch_size #Size of image batch to apply at each iteration.
         epochs = self.epochs
@@ -100,25 +121,32 @@ class ABModel(object):
                 for i in range(iterations):
                     #grab question from data
                     qs = data[index:index+batch_size]
+                    index += batch_size
                     #grab real answer
                     answer = RealAnswer(qs)
-                    index += batch_size
+                    xs = tf.concat(1,[qs,answer])
 
+                    '''
+                    Just keeping this in here for now...
+                    Code from DCGANN Tutorial their feed dict would look like
                     zs = np.random.uniform(-1.0,1.0,size=[batch_size,z_size]).astype(np.float32) #Generate a random z batch
                     xs,_ = mnist.train.next_batch(batch_size) #Draw a sample batch from MNIST dataset.
                     xs = (np.reshape(xs,[batch_size,28,28,1]) - 0.5) * 2.0 #Transform it to be between -1 and 1
                     xs = np.lib.pad(xs, ((0,0),(2,2),(2,2),(0,0)),'constant', constant_values=(-1, -1)) #Pad the images so the are 32x32
+                    '''
+                    #feed_dict = {enc_inp[t]: X[t] for t in range(seq_length)}
                     _,dLoss = sess.run([update_D,d_loss],feed_dict={q_in:qs,real_in:xs}) #Update the discriminator
                     _,gLoss = sess.run([update_G,g_loss],feed_dict={q_in:qs}) #update generator
 
                     if i % 100 == 0:
+                        #print a question/Answer
                         print("Gen Loss: " + str(gLoss) + " Disc Loss: " + str(dLoss))
-                        z2 = np.random.uniform(-1.0,1.0,size=[batch_size,z_size]).astype(np.float32) #Generate another z batch
-                        newZ = sess.run(Gz,feed_dict={z_in:z2}) #Use new z to get sample images from generator.
+                        q2 = data[0] #using the first question to see how we improve
+                        newA = sess.run(Gz,feed_dict={enc_inp: q2[t] for t in range(self.seq_length) })
                         if not os.path.exists(sample_directory):
                             os.makedirs(sample_directory)
                         #Save sample generator images for viewing training progress.
-                        save_images(np.reshape(newZ[0:36],[36,32,32]),[6,6],sample_directory+'/fig'+str(i)+'.png')
+                        save_Answer(q2,newA,sample_directory+'/fig'+str(i)+'.png')
                     if i % 1000 == 0 and i != 0:
                         if not os.path.exists(model_directory):
                             os.makedirs(model_directory)
@@ -128,37 +156,44 @@ class ABModel(object):
 
 
     def discriminator(self, d_in, reuse=False):
-        #*original d_in = tf.placeholder(tf.float32, [None, 2*seq_length])
+        print("discriminator architecture")
+        #An RNN classifier dynamic, so input is (batch,seq,features)
+        #*original d_in = tf.placeholder(tf.float32, [None, 2*seq_length,1])
         #Have to set up reuse because we initialize this thing twise in the graph creating
-        
+
         #Lets change this to be embedding LSTM probability model
         #a la https://gist.github.com/monikkinom/e97d518fe02a79177b081c028a83ec1c
+        #could also use a more complicated/ deeper classification model
+        #Ok so dynamic rnn unrolls inputs automatically
+        #aka takes in a single tensor(batch,seq_len,dim)
 
-        with tf.variable_scope("D_LSTM"):
-            num_hidden = self.hidden_size
-            cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
+        num_hidden = self.hidden_size
+        cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
 
-            val, _ = tf.nn.dynamic_rnn(cell, d_in, dtype=tf.float32)
-            val = tf.transpose(val, [1, 0, 2])
+        val, _ = tf.nn.dynamic_rnn(cell, d_in)
+        val = tf.transpose(val, [1, 0, 2]) #transposes so we can get just the last time step
 
-            last = tf.gather(val, int(val.get_shape()[0]) - 1)
+        last = tf.gather(val, int(val.get_shape()[0]) - 1) #get last output
 
-            #d_output_vocab = 1 (high probability means it looks like real data)
-            weight = tf.Variable(tf.truncated_normal([num_hidden, self.d_output_vocab]))
-            bias = tf.Variable(tf.constant(0.1, shape=[self.d_output_vocab]))
-
+        #make prediction based on last output
+        #d_output_vocab = 1 (high probability means it looks like real data)
+        weight = tf.Variable(tf.truncated_normal([num_hidden, self.d_output_vocab]))
+        bias = tf.Variable(tf.constant(0.1, shape=[self.d_output_vocab]))
         prediction = tf.nn.softmax(tf.matmul(last, weight) + bias)
         
         return prediction
 
-    def generator(self, q):
+    def generator(self, enc_inp):
+        #print(len(enc_inp))
+        #print(tf.shape_n(enc_inp))
+        #this one still needs work!
+        #input is encoder_input (a list of inputs)
+        #output is ?argmax? of decoder_output
+
+        print("generator architecture")
 
         #Lets change this to be embedding rnn model a la
         #https://github.com/hans/ipython-notebooks/blob/master/tf/TF%20tutorial.ipynb
-
-        enc_inp = [tf.placeholder(tf.int32, shape=(None,),
-                                  name="inp%i" % t)
-                   for t in range(self.seq_length)]
 
         labels = [tf.placeholder(tf.int32, shape=(None,),
                                 name="labels%i" % t)
@@ -175,12 +210,29 @@ class ABModel(object):
         # Initial memory value for recurrence.
         prev_mem = tf.zeros((self.batch_size, self.memory_dim))
 
-        cell = rnn_cell.GRUCell(self.memory_dim)
+        cell = tf.nn.rnn_cell.GRUCell(self.memory_dim)
+        '''
+        embedding_rnn_seq2seq(encoder_inputs,
+                          decoder_inputs,
+                          cell,
+                          num_encoder_symbols,
+                          num_decoder_symbols,
+                          embedding_size,
+                          output_projection=None,
+                          feed_previous=False,
+                          dtype=None,
+                          scope=None):
+        https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/ops/seq2seq.py
+                          '''
 
-        g_out, dec_memory = seq2seq.embedding_rnn_seq2seq(
-            enc_inp, dec_inp, cell, self.input_vocab_size, self.output_vocab_size)
-        
-        return g_out
+        g_out, dec_memory = tf.nn.seq2seq.embedding_rnn_seq2seq(
+            enc_inp, dec_inp, cell, self.input_vocab_size, self.output_vocab_size,self.memory_dim)
+
+        #might need to take argmax AND pack it back into one tensor!
+        predictions = [tf.argmax(logits,1) for logits in g_out]
+        print(predictions)
+        #[logits_t.argmax(axis=1) for logits_t in dec_outputs_batch]
+        return self.pack_sequence(predictions)
 
     def RealAnswer(self, q_in):
         #Contains Logic to make the real answer from the question
@@ -188,4 +240,22 @@ class ABModel(object):
         key = 2*np.ones_like(q_in)
         real_answer = q_in + key
         return real_answer
+
+    def save_answer(self, q, a, path):
+        answer = np.concatenate(q,a)
+        return np.savetxt(path,answer)
+
+
+    #Extremely useful for transfering from seq2seq stuff to the dynamic rnn classification
+    #https://danijar.com/introduction-to-recurrent-networks-in-tensorflow/
+    def unpack_sequence(self, tensor):
+        """Split the single tensor of a sequence into a list of frames."""
+        #return tf.unpack(tf.transpose(tensor, perm=[1, 0, 2]))
+        return tf.unpack(tensor,axis=1)
+
+
+    def pack_sequence(self,sequence):
+        """Combine a list of the frames into a single tensor of the sequence."""
+        #return tf.transpose(tf.pack(sequence), perm=[1, 0, 2])
+        return tf.pack(sequence,axis=1)
 
