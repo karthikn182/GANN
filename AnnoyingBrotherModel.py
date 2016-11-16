@@ -1,9 +1,9 @@
 
 
 #Things to-do
-#1. make output of Generator a sequence (not probabilties!)
-#2. Figure out concatenating in the right manner!
-#3. make sure train() function is correct
+#1. Figure out what's going on with gradients.  My guess is that its not working
+# because argmax is not differentiable...
+#2. make sure train() function is correct
 
 import time
 import numpy as np
