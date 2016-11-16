@@ -75,7 +75,10 @@ class ABModel(object):
             Dx = self.discriminator(real_in) #Produces probabilities for real question/answer
             print("now trying to input G_out into Discriminator")
             scope.reuse_variables()
-            Dg = self.discriminator(tf.concat(1,[q_in,Gz])) #Produces probabilities for generated question/answer pair
+
+            #how to combine question and G_out? Input concatenation of qd,Gz
+            q_d = tf.placeholder(shape=[None,self.seq_length,1],dtype=tf.int32) #question sequence
+            Dg = self.discriminator(tf.concat(1,[q_d,Gz])) #Produces probabilities for generated question/answer pair
 
 
         #These functions together define the optimization objective of the GAN.
@@ -89,13 +92,15 @@ class ABModel(object):
         trainerG = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
 
         tvars = tf.trainable_variables() #Don't know how many variables this is
-        print("tvars length: ",len(tvars))
+        print("tvars length: ",len(tvars)) #length 18
 
-        d_params = [v for v in tvars if v.name.startswith('D/')]
-        g_params = [v for v in tvars if v.name.startswith('G/')]
+        d_grads = trainerD.compute_gradients(d_loss,tvars[9:]) #Only update the weights for the discriminator network.
+        g_grads = trainerG.compute_gradients(g_loss,tvars[0:9])
 
-        d_grads = trainerD.compute_gradients(d_loss,d_params) #Only update the weights for the discriminator network.
-        g_grads = trainerG.compute_gradients(g_loss,g_params) #Only update the weights for the generator network.
+        #d_params = [v for v in tvars if v.name.startswith('D')]
+        #g_params = [v for v in tvars if v.name.startswith('G')]
+        #d_grads = trainerD.compute_gradients(d_loss,d_params) #Only update the weights for the discriminator network.
+        #g_grads = trainerG.compute_gradients(g_loss,g_params) #Only update the weights for the generator network.
 
         update_D = trainerD.apply_gradients(d_grads)
         update_G = trainerG.apply_gradients(g_grads)
@@ -119,12 +124,14 @@ class ABModel(object):
             for _ in range(epochs):
                 index = 0
                 for i in range(iterations):
-                    #grab question from data
-                    qs = data[index:index+batch_size]
+                    #grab question from data for generator
+                    qg = data[index:index+batch_size]
                     index += batch_size
-                    #grab real answer
-                    answer = RealAnswer(qs)
-                    xs = tf.concat(1,[qs,answer])
+
+                    #grab real answer from question, resized for discriminator (batch,seq_length,features)
+                    qd = np.reshape(qg,(batch_size,self.seq_length,1))
+                    answer = RealAnswer(qd)
+                    xs = np.concatenate((qd,answer),axis=1)
 
                     '''
                     Just keeping this in here for now...
@@ -135,18 +142,19 @@ class ABModel(object):
                     xs = np.lib.pad(xs, ((0,0),(2,2),(2,2),(0,0)),'constant', constant_values=(-1, -1)) #Pad the images so the are 32x32
                     '''
                     #feed_dict = {enc_inp[t]: X[t] for t in range(seq_length)}
-                    _,dLoss = sess.run([update_D,d_loss],feed_dict={q_in:qs,real_in:xs}) #Update the discriminator
-                    _,gLoss = sess.run([update_G,g_loss],feed_dict={q_in:qs}) #update generator
+                    _,dLoss = sess.run([update_D,d_loss],feed_dict = {q_d: qd, real_in:xs, enc_inp[t]: [qg[t] for t in range(self.seq_length)]}) #Update the discriminator
+                    _,gLoss = sess.run([update_G,g_loss],feed_dict = {enc_inp[t]: qg[t] for t in range(self.seq_length)}) #update generator
 
                     if i % 100 == 0:
                         #print a question/Answer
                         print("Gen Loss: " + str(gLoss) + " Disc Loss: " + str(dLoss))
-                        q2 = data[0] #using the first question to see how we improve
-                        newA = sess.run(Gz,feed_dict={enc_inp: q2[t] for t in range(self.seq_length) })
+                        q2 = data[0:0+batch_size] #using the first batch of question to see how we improve
+                        newA = sess.run(Gz,feed_dict={enc_inp: q2[t] for t in range(self.seq_length)})
+
                         if not os.path.exists(sample_directory):
                             os.makedirs(sample_directory)
                         #Save sample generator images for viewing training progress.
-                        save_Answer(q2,newA,sample_directory+'/fig'+str(i)+'.png')
+                        save_Answer(q2,newA,sample_directory+'/fig'+str(i))
                     if i % 1000 == 0 and i != 0:
                         if not os.path.exists(model_directory):
                             os.makedirs(model_directory)
@@ -167,10 +175,14 @@ class ABModel(object):
         #Ok so dynamic rnn unrolls inputs automatically
         #aka takes in a single tensor(batch,seq_len,dim)
 
+        d_input = tf.cast(d_in, dtype="float32")
+
         num_hidden = self.hidden_size
         cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
 
-        val, _ = tf.nn.dynamic_rnn(cell, d_in)
+
+        # Have to cast d_in to float
+        val, _ = tf.nn.dynamic_rnn(cell, d_input,dtype="float32")
         val = tf.transpose(val, [1, 0, 2]) #transposes so we can get just the last time step
 
         last = tf.gather(val, int(val.get_shape()[0]) - 1) #get last output
@@ -180,7 +192,7 @@ class ABModel(object):
         weight = tf.Variable(tf.truncated_normal([num_hidden, self.d_output_vocab]))
         bias = tf.Variable(tf.constant(0.1, shape=[self.d_output_vocab]))
         prediction = tf.nn.softmax(tf.matmul(last, weight) + bias)
-        
+
         return prediction
 
     def generator(self, enc_inp):
@@ -225,14 +237,19 @@ class ABModel(object):
         https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/ops/seq2seq.py
                           '''
 
-        g_out, dec_memory = tf.nn.seq2seq.embedding_rnn_seq2seq(
+        d_out, dec_memory = tf.nn.seq2seq.embedding_rnn_seq2seq(
             enc_inp, dec_inp, cell, self.input_vocab_size, self.output_vocab_size,self.memory_dim)
 
         #might need to take argmax AND pack it back into one tensor!
-        predictions = [tf.argmax(logits,1) for logits in g_out]
+        predictions = [tf.argmax(logits,1) for logits in d_out]
         print(predictions)
         #[logits_t.argmax(axis=1) for logits_t in dec_outputs_batch]
-        return self.pack_sequence(predictions)
+
+        g_out = self.pack_sequence(predictions)
+        mod_g = tf.expand_dims(g_out,-1)
+        int_g_out = tf.cast(mod_g,tf.int32)
+
+        return int_g_out
 
     def RealAnswer(self, q_in):
         #Contains Logic to make the real answer from the question
@@ -242,7 +259,7 @@ class ABModel(object):
         return real_answer
 
     def save_answer(self, q, a, path):
-        answer = np.concatenate(q,a)
+        answer = np.concatenate((q,a),axis=1)
         return np.savetxt(path,answer)
 
 
