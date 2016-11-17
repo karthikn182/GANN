@@ -12,14 +12,15 @@ def RealAnswer(q_in):
     #Contains Logic to make the real answer from the question
     #for now, just adding 2 to every word (annoying right?)
     #a one hot answer!
-    key = 2*np.ones_like(q_in)
+    key = 1*np.ones_like(q_in)
     real_answer = q_in + key
     return convert_onehot(real_answer,10)
 
 def convert_onehot(a,classes):
-    z = np.zeros(list(a.shape) + [classes])
-    print(z)
-    z[list(np.indices(z.shape[:-1])) + [a]] = 1
+    z = (np.arange(classes) == a[:,:,None]-1).astype(int)
+    #z = np.zeros(list(a.shape) + [classes])
+    #print(z)
+    #z[list(np.indices(z.shape[:-1])) + [a]] = 1
     return z
 '''
 print("q",q)

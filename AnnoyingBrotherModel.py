@@ -216,14 +216,12 @@ class ABModel(object):
             for _ in range(epochs):
                 index = 0
                 for i in range(iterations):
-                    #grab question from data for generator
+                    #grab integer question from data for generator
                     qg = data[index:index+batch_size]
                     index += batch_size
 
                     #grab real answer from question, resized for discriminator (batch,seq_length,features)
-                    qd = np.reshape(qg,(batch_size,self.seq_length,1))
                     answer = RealAnswer(qd)
-                    xs = np.concatenate((qd,answer),axis=1)
 
                     '''
                     Just keeping this in here for now...
@@ -234,7 +232,7 @@ class ABModel(object):
                     xs = np.lib.pad(xs, ((0,0),(2,2),(2,2),(0,0)),'constant', constant_values=(-1, -1)) #Pad the images so the are 32x32
                     '''
                     #feed_dict = {enc_inp[t]: X[t] for t in range(seq_length)}
-                    _,dLoss = sess.run([update_D,d_loss],feed_dict = {q_d: qd, real_in:xs, enc_inp[t]: [qg[t] for t in range(self.seq_length)]}) #Update the discriminator
+                    _,dLoss = sess.run([update_D,d_loss],feed_dict = {real_in: answer, enc_inp[t]: [qg[t] for t in range(self.seq_length)]}) #Update the discriminator
                     _,gLoss = sess.run([update_G,g_loss],feed_dict = {enc_inp[t]: qg[t] for t in range(self.seq_length)}) #update generator
 
                     if i % 100 == 0:
@@ -254,19 +252,25 @@ class ABModel(object):
                         print("Saved Model")
 
 
+
     def RealAnswer(self, q_in):
         #Contains Logic to make the real answer from the question
         #for now, just adding 2 to every word (annoying right?)
         #a one hot answer!
         key = 2*np.ones_like(q_in)
         real_answer = q_in + key
-        b = np.zeros((real_answer.size, real_answer.max()+1))
-        b[np.arange(real_answer.size),real_answer] = 1
-        return b
+        return convert_onehot(real_answer,self.output_vocab_size)
 
-    def save_answer(self, q, a, path):
-        answer = np.concatenate((q,a),axis=1)
-        return np.savetxt(path,answer)
+    def convert_onehot(self, a,classes):
+        z = (np.arange(classes) == a[:,:,None]-1).astype(float)
+        #z = np.zeros(list(a.shape) + [classes])
+        #print(z)
+        #z[list(np.indices(z.shape[:-1])) + [a]] = 1
+        return z
+
+        def save_answer(self, q, a, path):
+            answer = np.concatenate((q,a),axis=1)
+            return np.savetxt(path,answer)
 
 
     #Extremely useful for transfering from seq2seq stuff to the dynamic rnn classification

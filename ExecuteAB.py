@@ -24,10 +24,11 @@ The goal is to have the Generator learn this answer key
 #Read Data
 n = 1000
 Q = np.genfromtxt('ab_data.csv',dtype='int32',delimiter=',')
-Q = np.reshape(Q,(n,5,1))
+Q = np.reshape(Q,(n,5)) #[ [1,2,3,4,5],
+						   #[1,2,3,4,5], ... ]
 #print(Q)
-
+print("config")
 config = AnnoyingBrotherConfig()
-
+print("model")
 model = ABModel(config) 
 model.train(Q)
