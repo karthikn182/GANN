@@ -124,14 +124,6 @@ class ABModel(object):
                 self.enc_inp, self.dec_inp, self.cell, self.input_vocab_size, self.output_vocab_size,self.memory_dim)
 
             #might need to take softargmax? AND pack it back into one tensor!
-            '''
-            self.predictions = [tf.argmax(logits,1) for logits in self.d_out]
-            #[logits_t.argmax(axis=1) for logits_t in dec_outputs_batch]
-
-            self.g_out = self.pack_sequence(self.predictions)
-            self.mod_g = tf.expand_dims(self.g_out,-1)
-            self.int_g_out = tf.cast(self.mod_g,tf.int32)
-            '''
             self.g_out = self.pack_sequence(self.d_out)
             print("Generator out shape:",self.g_out.get_shape())
             return self.g_out
@@ -184,8 +176,8 @@ class ABModel(object):
         print("about to comput gradients")
         self.d_grads = self.trainerD.compute_gradients(self.d_loss,self.tvars[9:]) #Only update the weights for the discriminator network.
         self.g_grads = self.trainerG.compute_gradients(self.g_loss,self.tvars[0:9])
-        print("computing d gradients",self.d_grads)
-        print("computing g gradients",self.g_grads)
+        #print("computing d gradients",self.d_grads)
+        #print("computing g gradients",self.g_grads)
 
 
         #d_params = [v for v in tvars if v.name.startswith('D')]
@@ -205,7 +197,7 @@ class ABModel(object):
 
         batch_size = self.batch_size #Size of image batch to apply at each iteration.
         epochs = self.max_epoch
-        iterations = len(data)/batch_size
+        iterations = len(data)//batch_size
         sample_directory = './figs' #Directory to save sample images from generator in.
         model_directory = './models' #Directory to save trained model to.
 
@@ -218,10 +210,12 @@ class ABModel(object):
                 for i in range(iterations):
                     #grab integer question from data for generator
                     qg = data[index:index+batch_size]
+                    print("qg",qg)
                     index += batch_size
 
                     #grab real answer from question, resized for discriminator (batch,seq_length,features)
-                    answer = RealAnswer(qd)
+                    answer = self.RealAnswer(qg)
+                    print("answer",answer)
 
                     '''
                     Just keeping this in here for now...
@@ -232,8 +226,13 @@ class ABModel(object):
                     xs = np.lib.pad(xs, ((0,0),(2,2),(2,2),(0,0)),'constant', constant_values=(-1, -1)) #Pad the images so the are 32x32
                     '''
                     #feed_dict = {enc_inp[t]: X[t] for t in range(seq_length)}
-                    _,dLoss = sess.run([update_D,d_loss],feed_dict = {real_in: answer, enc_inp[t]: [qg[t] for t in range(self.seq_length)]}) #Update the discriminator
-                    _,gLoss = sess.run([update_G,g_loss],feed_dict = {enc_inp[t]: qg[t] for t in range(self.seq_length)}) #update generator
+                    gfeed_dict = {self.enc_inp[t]: qg[t] for t in range(self.seq_length)}
+                    dfeed_dict = {self.enc_inp[t]: qg[t] for t in range(self.seq_length)}
+                    dfeed_dict.update({self.real_in: answer})
+
+
+                    _,dLoss = sess.run([self.update_D,self.d_loss],dfeed_dict)#Update the discriminator
+                    _,gLoss = sess.run([self.update_G,self.g_loss],gfeed_dict) #update generator
 
                     if i % 100 == 0:
                         #print a question/Answer
@@ -259,7 +258,7 @@ class ABModel(object):
         #a one hot answer!
         key = 2*np.ones_like(q_in)
         real_answer = q_in + key
-        return convert_onehot(real_answer,self.output_vocab_size)
+        return self.convert_onehot(real_answer,self.output_vocab_size)
 
     def convert_onehot(self, a,classes):
         z = (np.arange(classes) == a[:,:,None]-1).astype(float)
