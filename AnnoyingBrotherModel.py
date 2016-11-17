@@ -226,8 +226,9 @@ class ABModel(object):
                     xs = np.lib.pad(xs, ((0,0),(2,2),(2,2),(0,0)),'constant', constant_values=(-1, -1)) #Pad the images so the are 32x32
                     '''
                     #feed_dict = {enc_inp[t]: X[t] for t in range(seq_length)}
-                    gfeed_dict = {self.enc_inp[t]: qg[t] for t in range(self.seq_length)}
-                    dfeed_dict = {self.enc_inp[t]: qg[t] for t in range(self.seq_length)}
+                    #sorry hardcoding the batch size one here  :/
+                    gfeed_dict = {self.enc_inp[t]: [qg[0][t]] for t in range(self.seq_length)}
+                    dfeed_dict = {self.enc_inp[t]: [qg[0][t]] for t in range(self.seq_length)}
                     dfeed_dict.update({self.real_in: answer})
 
 
@@ -238,7 +239,7 @@ class ABModel(object):
                         #print a question/Answer
                         print("Gen Loss: " + str(gLoss) + " Disc Loss: " + str(dLoss))
                         q2 = data[0:0+batch_size] #using the first batch of question to see how we improve
-                        newA = sess.run(Gz,feed_dict={enc_inp: q2[t] for t in range(self.seq_length)})
+                        newA = sess.run(self.Gz,feed_dict={self.enc_inp: [q2[0][t]] for t in range(self.seq_length)})
 
                         if not os.path.exists(sample_directory):
                             os.makedirs(sample_directory)
