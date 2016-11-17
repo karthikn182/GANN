@@ -1,9 +1,9 @@
 
 
 #Things to-do
-#1. Figure out what's going on with gradients.  My guess is that its not working
-# because argmax is not differentiable...
-#2. make sure train() function is correct
+#1. make output of Generator a sequence (not probabilties!)
+#2. Figure out concatenating in the right manner!
+#3. make sure train() function is correct
 
 import time
 import numpy as np
@@ -22,14 +22,14 @@ class AnnoyingBrotherConfig(object):
     keep_prob = 0.5 #for dropout, Not Implemented
     lr_decay = 0.8
     batch_size = 1
-    input_vocab_size = 500
-    output_vocab_size = 502 #adding 2 to each word
+    input_vocab_size = 10
+    output_vocab_size = 12 #adding 2 to each word
     d_output_vocab = 1 #aka number of classes (in this case P(real data))
 
 class ABModel(object):
 
     def __init__(self,config):
-        print("initializing")
+        print("initializing Annoying Brother Init model")
         #initialize model variables
         #Combine the generator and discriminator model
         self.lr = config.learning_rate
@@ -47,6 +47,94 @@ class ABModel(object):
         self.input_vocab_size = config.input_vocab_size
         self.output_vocab_size = config.output_vocab_size
         self.d_output_vocab = 2
+        #--------------D and G Models----------------------------#
+        def discriminator(d_in, reuse=False):
+            print("discriminator architecture")
+            #An RNN classifier - dynamic, so input is (batch,seq,features)
+            #*original d_in = tf.placeholder(tf.float32, [None, 2*seq_length,1])
+            #Have to set up reuse because we initialize this thing twise in the graph creating
+
+            #Lets change this to be embedding LSTM probability model
+            #a la https://gist.github.com/monikkinom/e97d518fe02a79177b081c028a83ec1c
+            #could also use a more complicated/ deeper classification model
+            #Ok so dynamic rnn unrolls inputs automatically
+            #aka takes in a single tensor(batch,seq_len,dim)
+
+            num_hidden = self.hidden_size
+            self.dcell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
+
+
+            # Have to cast d_in to float
+            self.val, _ = tf.nn.dynamic_rnn(self.dcell, d_in,dtype="float32")
+            self.val = tf.transpose(self.val, [1, 0, 2]) #transposes so we can get just the last time step
+
+            self.last = tf.gather(self.val, int(self.val.get_shape()[0]) - 1) #get last output
+
+            #make prediction based on last output
+            #d_output_vocab = 1 (high probability means it looks like real data)
+            self.dweight = tf.Variable(tf.truncated_normal([num_hidden, self.d_output_vocab]))
+            self.dbias = tf.Variable(tf.constant(0.1, shape=[self.d_output_vocab]))
+            self.prediction = tf.nn.softmax(tf.matmul(self.last, self.dweight) + self.dbias)
+
+            return self.prediction
+
+        def generator(enc_inp):
+            #print(len(enc_inp))
+            #print(tf.shape_n(enc_inp))
+            #this one still needs work!
+            #input is encoder_input (a list of inputs)
+            #output is ?argmax? of decoder_output
+
+            print("generator architecture")
+
+            #Lets change this to be embedding rnn model a la
+            #https://github.com/hans/ipython-notebooks/blob/master/tf/TF%20tutorial.ipynb
+
+            #self.labels = [tf.placeholder(tf.int32, shape=(None,),
+             #                       name="labels%i" % t)
+              #        for t in range(self.seq_length)]
+
+            #self.weights = [tf.ones_like(labels_t, dtype=tf.float32)
+             #          for labels_t in self.labels]
+
+            # Decoder input: prepend some "GO" token and drop the final
+            # token of the encoder input
+            self.dec_inp = ([tf.zeros_like(enc_inp[0], dtype=np.int32, name="GO")]
+                       + enc_inp[:-1])
+
+            # Initial memory value for recurrence.
+            self.prev_mem = tf.zeros((self.batch_size, self.memory_dim))
+
+            self.cell = tf.nn.rnn_cell.GRUCell(self.memory_dim)
+            '''
+            embedding_rnn_seq2seq(encoder_inputs,
+                              decoder_inputs,
+                              cell,
+                              num_encoder_symbols,
+                              num_decoder_symbols,
+                              embedding_size,
+                              output_projection=None,
+                              feed_previous=False,
+                              dtype=None,
+                              scope=None):
+            https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/ops/seq2seq.py
+                              '''      
+            #d_out is a list of tensors
+            self.d_out, self.dec_memory = tf.nn.seq2seq.embedding_rnn_seq2seq(
+                self.enc_inp, self.dec_inp, self.cell, self.input_vocab_size, self.output_vocab_size,self.memory_dim)
+
+            #might need to take softargmax? AND pack it back into one tensor!
+            '''
+            self.predictions = [tf.argmax(logits,1) for logits in self.d_out]
+            #[logits_t.argmax(axis=1) for logits_t in dec_outputs_batch]
+
+            self.g_out = self.pack_sequence(self.predictions)
+            self.mod_g = tf.expand_dims(self.g_out,-1)
+            self.int_g_out = tf.cast(self.mod_g,tf.int32)
+            '''
+            self.g_out = self.pack_sequence(self.d_out)
+            print("Generator out shape:",self.g_out.get_shape())
+            return self.g_out
 
         #INITIALIZING GRAPH
         tf.reset_default_graph()
@@ -61,58 +149,62 @@ class ABModel(object):
 
             #Generator input placeholder: encoder_inputs are a list of tensors. len(list) = eq length
             
-            enc_inp = [tf.placeholder(tf.int32, shape=(None,),
+            self.enc_inp = [tf.placeholder(tf.int32, shape=(None,),
                           name="inp%i" % t)
                         for t in range(self.seq_length)]
             
-            Gz = self.generator(enc_inp) #Generates answer from question input
+            self.Gz = generator(self.enc_inp) #Generates answer from question input
 
         #Only create the Discriminator Variables once!
         print("discriminator vars")
         with tf.variable_scope("D") as scope:
             #Discriminator input placeholder (none,2*seq_length,1)
-            real_in = tf.placeholder(shape=[None,2*self.seq_length,1],dtype=tf.int32) #Real "Question/Answer" placeholder 
-            Dx = self.discriminator(real_in) #Produces probabilities for real question/answer
+            self.real_in = tf.placeholder(shape=[None,self.seq_length,self.output_vocab_size],dtype=tf.float32) #Real "Question/Answer" placeholder 
+            self.Dx = discriminator(self.real_in) #Produces probabilities for real question/answer
             print("now trying to input G_out into Discriminator")
             scope.reuse_variables()
 
             #how to combine question and G_out? Input concatenation of qd,Gz
-            q_d = tf.placeholder(shape=[None,self.seq_length,1],dtype=tf.int32) #question sequence
-            Dg = self.discriminator(tf.concat(1,[q_d,Gz])) #Produces probabilities for generated question/answer pair
+            self.Dg = discriminator(self.Gz) #Produces probabilities for generated question/answer pair
 
 
         #These functions together define the optimization objective of the GAN.
-        d_loss = -tf.reduce_mean(tf.log(Dx) + tf.log(1.-Dg)) #This optimizes the discriminator.
-        g_loss = -tf.reduce_mean(tf.log(Dg)) #This optimizes the generator.
+        self.d_loss = -tf.reduce_mean(tf.log(self.Dx) + tf.log(1.-self.Dg)) #This optimizes the discriminator.
+        self.g_loss = -tf.reduce_mean(tf.log(self.Dg)) #This optimizes the generator.
 
 
 
         #The below code is responsible for applying gradient descent to update the GAN.
-        trainerD = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
-        trainerG = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
+        self.trainerD = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
+        self.trainerG = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
 
-        tvars = tf.trainable_variables() #Don't know how many variables this is
-        print("tvars length: ",len(tvars)) #length 18
+        self.tvars = tf.trainable_variables() #Don't know how many variables this is
+        print("tvars length: ",len(self.tvars)) #length 18
 
-        d_grads = trainerD.compute_gradients(d_loss,tvars[9:]) #Only update the weights for the discriminator network.
-        g_grads = trainerG.compute_gradients(g_loss,tvars[0:9])
+        print("about to comput gradients")
+        self.d_grads = self.trainerD.compute_gradients(self.d_loss,self.tvars[9:]) #Only update the weights for the discriminator network.
+        self.g_grads = self.trainerG.compute_gradients(self.g_loss,self.tvars[0:9])
+        print("computing d gradients",self.d_grads)
+        print("computing g gradients",self.g_grads)
+
 
         #d_params = [v for v in tvars if v.name.startswith('D')]
         #g_params = [v for v in tvars if v.name.startswith('G')]
         #d_grads = trainerD.compute_gradients(d_loss,d_params) #Only update the weights for the discriminator network.
         #g_grads = trainerG.compute_gradients(g_loss,g_params) #Only update the weights for the generator network.
 
-        update_D = trainerD.apply_gradients(d_grads)
-        update_G = trainerG.apply_gradients(g_grads)
+        self.update_D = self.trainerD.apply_gradients(self.d_grads)
+        self.update_G = self.trainerG.apply_gradients(self.g_grads)
         #FINISHED DEFINING TensorFlow Graph
         #now cn train model with annoyingbrother.train(data)
+
 
     #TRAINING
     def train(self,data):
         print("training")
 
         batch_size = self.batch_size #Size of image batch to apply at each iteration.
-        epochs = self.epochs
+        epochs = self.max_epoch
         iterations = len(data)/batch_size
         sample_directory = './figs' #Directory to save sample images from generator in.
         model_directory = './models' #Directory to save trained model to.
@@ -162,101 +254,15 @@ class ABModel(object):
                         print("Saved Model")
 
 
-
-    def discriminator(self, d_in, reuse=False):
-        print("discriminator architecture")
-        #An RNN classifier dynamic, so input is (batch,seq,features)
-        #*original d_in = tf.placeholder(tf.float32, [None, 2*seq_length,1])
-        #Have to set up reuse because we initialize this thing twise in the graph creating
-
-        #Lets change this to be embedding LSTM probability model
-        #a la https://gist.github.com/monikkinom/e97d518fe02a79177b081c028a83ec1c
-        #could also use a more complicated/ deeper classification model
-        #Ok so dynamic rnn unrolls inputs automatically
-        #aka takes in a single tensor(batch,seq_len,dim)
-
-        d_input = tf.cast(d_in, dtype="float32")
-
-        num_hidden = self.hidden_size
-        cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
-
-
-        # Have to cast d_in to float
-        val, _ = tf.nn.dynamic_rnn(cell, d_input,dtype="float32")
-        val = tf.transpose(val, [1, 0, 2]) #transposes so we can get just the last time step
-
-        last = tf.gather(val, int(val.get_shape()[0]) - 1) #get last output
-
-        #make prediction based on last output
-        #d_output_vocab = 1 (high probability means it looks like real data)
-        weight = tf.Variable(tf.truncated_normal([num_hidden, self.d_output_vocab]))
-        bias = tf.Variable(tf.constant(0.1, shape=[self.d_output_vocab]))
-        prediction = tf.nn.softmax(tf.matmul(last, weight) + bias)
-
-        return prediction
-
-    def generator(self, enc_inp):
-        #print(len(enc_inp))
-        #print(tf.shape_n(enc_inp))
-        #this one still needs work!
-        #input is encoder_input (a list of inputs)
-        #output is ?argmax? of decoder_output
-
-        print("generator architecture")
-
-        #Lets change this to be embedding rnn model a la
-        #https://github.com/hans/ipython-notebooks/blob/master/tf/TF%20tutorial.ipynb
-
-        labels = [tf.placeholder(tf.int32, shape=(None,),
-                                name="labels%i" % t)
-                  for t in range(self.seq_length)]
-
-        weights = [tf.ones_like(labels_t, dtype=tf.float32)
-                   for labels_t in labels]
-
-        # Decoder input: prepend some "GO" token and drop the final
-        # token of the encoder input
-        dec_inp = ([tf.zeros_like(enc_inp[0], dtype=np.int32, name="GO")]
-                   + enc_inp[:-1])
-
-        # Initial memory value for recurrence.
-        prev_mem = tf.zeros((self.batch_size, self.memory_dim))
-
-        cell = tf.nn.rnn_cell.GRUCell(self.memory_dim)
-        '''
-        embedding_rnn_seq2seq(encoder_inputs,
-                          decoder_inputs,
-                          cell,
-                          num_encoder_symbols,
-                          num_decoder_symbols,
-                          embedding_size,
-                          output_projection=None,
-                          feed_previous=False,
-                          dtype=None,
-                          scope=None):
-        https://github.com/tensorflow/tensorflow/blob/master/tensorflow/python/ops/seq2seq.py
-                          '''
-
-        d_out, dec_memory = tf.nn.seq2seq.embedding_rnn_seq2seq(
-            enc_inp, dec_inp, cell, self.input_vocab_size, self.output_vocab_size,self.memory_dim)
-
-        #might need to take argmax AND pack it back into one tensor!
-        predictions = [tf.argmax(logits,1) for logits in d_out]
-        print(predictions)
-        #[logits_t.argmax(axis=1) for logits_t in dec_outputs_batch]
-
-        g_out = self.pack_sequence(predictions)
-        mod_g = tf.expand_dims(g_out,-1)
-        int_g_out = tf.cast(mod_g,tf.int32)
-
-        return int_g_out
-
     def RealAnswer(self, q_in):
         #Contains Logic to make the real answer from the question
         #for now, just adding 2 to every word (annoying right?)
+        #a one hot answer!
         key = 2*np.ones_like(q_in)
         real_answer = q_in + key
-        return real_answer
+        b = np.zeros((real_answer.size, real_answer.max()+1))
+        b[np.arange(real_answer.size),real_answer] = 1
+        return b
 
     def save_answer(self, q, a, path):
         answer = np.concatenate((q,a),axis=1)
