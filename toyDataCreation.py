@@ -16,7 +16,7 @@ def is_prime(n):
     return all(n % i for i in range(3, int(math.sqrt(n)) + 1, 2))
 
 #5 digit question & 5 digit answer
-numSamples = 3
+numSamples = 30000
 numPositions = 5
 
 #Declaring empty arrays
@@ -54,5 +54,3 @@ for i in range(numSamples):
 	quesNpArry[:,:,i] = quesArry
 	ansNpArry[:,:,i] = ansArry
 		
-print(quesNpArry[:,:,0])
-print(ansNpArry[:,:,0])
