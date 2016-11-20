@@ -12,13 +12,13 @@ import os
 class AnnoyingBrotherConfig(object):
     """Define HyperParameters"""
     init_scale = 0.05
-    learning_rate = 1.0
+    learning_rate = .02
     max_grad_norm = 5
     num_layers = 2 #Not Implemented: can be used to make Discriminator deeper (multi-LSTM cells)
     sequence_length = 5 
     hidden_size = 50 #size of one lstm cell
     memory_dim = 100 #memory dimension for GRU cell in seq2seq
-    max_epoch = 1
+    max_epoch = 4
     keep_prob = 0.5 #for dropout, Not Implemented
     lr_decay = 0.8
     batch_size = 1
@@ -73,12 +73,12 @@ class ABModel(object):
             #make prediction based on last output
             #d_output_vocab = 1 (high probability means it looks like real data)
             self.dweight = tf.Variable(tf.truncated_normal([num_hidden, self.d_output_vocab]))
-            self.dweight = tf.Print(self.dweight, [self.dweight], "D-weight: ")
+            #self.dweight = tf.Print(self.dweight, [self.dweight], "D-weight: ")
             self.dbias = tf.Variable(tf.constant(0.1, shape=[self.d_output_vocab]))
-            self.dbias = tf.Print(self.dbias, [self.dbias], "D-bias: ")
+            #self.dbias = tf.Print(self.dbias, [self.dbias], "D-bias: ")
             #lets try cross entropy with logits
             self.prediction = tf.nn.softmax(tf.matmul(self.last, self.dweight) + self.dbias)
-            self.prediction = tf.Print(self.prediction, [self.prediction], "D-Predict: ")
+            #self.prediction = tf.Print(self.prediction, [self.prediction], "D-Predict: ")
 
             return self.prediction
 
@@ -97,7 +97,10 @@ class ABModel(object):
             # Initial memory value for recurrence.
             self.prev_mem = tf.zeros((self.batch_size, self.memory_dim))
 
-            self.cell = tf.nn.rnn_cell.GRUCell(self.memory_dim)
+            #self.cell = tf.nn.rnn_cell.GRUCell(self.memory_dim)
+            #try LSTM cell
+            #self.cell = tf.nn.rnn_cell.BasicLSTMCell(self.memory_dim)
+            self.cell = tf.nn.rnn_cell.LSTMCell(self.memory_dim)
             '''
             embedding_rnn_seq2seq(encoder_inputs,
                               decoder_inputs,
@@ -170,8 +173,12 @@ class ABModel(object):
 
 
         #The below code is responsible for applying gradient descent to update the GAN.
-        self.trainerD = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
-        self.trainerG = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
+        #Adam converged VERY quickly 
+        #self.trainerD = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
+        #self.trainerG = tf.train.AdamOptimizer(learning_rate=self.lr,beta1=self.lr_decay)
+
+        self.trainerD = tf.train.GradientDescentOptimizer(learning_rate=self.lr)
+        self.trainerG = tf.train.GradientDescentOptimizer(learning_rate=self.lr)
 
         self.tvars = tf.trainable_variables() #Don't know how many variables this is
         print("tvars length: ",len(self.tvars)) #length 18
@@ -215,7 +222,7 @@ class ABModel(object):
             sess.run(init)
             for _ in range(epochs):
                 index = 0
-                for i in range(10):
+                for i in range(1000):
                     #grab integer question from data for generator
                     qg = data[index:index+batch_size]
                     #print("qg",qg)
@@ -244,13 +251,15 @@ class ABModel(object):
                     dfeed_dict.update({self.real_target: real_t})
                     dfeed_dict.update({self.gen_target: gen_t})
 
+                    if i < 200:
+                        _,dLoss = sess.run([self.update_D,self.d_loss],dfeed_dict)#Update the discriminator
+                        _,gLoss = sess.run([self.update_G,self.g_loss],gfeed_dict) #update generator
+                    #try updating twice
+                    _,gLoss = sess.run([self.update_G,self.g_loss],gfeed_dict)
 
-                    _,dLoss = sess.run([self.update_D,self.d_loss],dfeed_dict)#Update the discriminator
-                    #_,gLoss = sess.run([self.update_G,self.g_loss],gfeed_dict) #update generator
-
-                    if i % 2 == 0:
-                        #print("Gen Loss: " + str(gLoss) + " Disc Loss: " + str(dLoss))
-                        print("Disc Loss: "+str(dLoss))
+                    if i % 100 == 0:
+                        print("Gen Loss: " + str(gLoss) + " Disc Loss: " + str(dLoss))
+                        #print("Disc Loss: "+str(dLoss))
                         newA = sess.run(self.Gz,feed_dict={self.enc_inp[t]: [qg[0][t]] for t in range(self.seq_length)})
 
                         if not os.path.exists(sample_directory):
@@ -274,13 +283,25 @@ class ABModel(object):
         key = 2*np.ones_like(q_in)
         real_answer = q_in + key
         return self.convert_onehot(real_answer,self.output_vocab_size)
+    # correct solution:
+    # my (correct) solution:
+    def npsoftmax(self, z):
+        answer = []
+        for batch in z:
+            batched = []
+            for x in batch:
+                batched.append(np.exp(x)/np.sum(np.exp(x)))
+            answer.append(batched)
+        return (np.array(answer))
+
 
     def convert_onehot(self, a,classes):
         z = (np.arange(classes) == a[:,:,None]-1).astype(float)
-        #z = np.zeros(list(a.shape) + [classes])
-        #print(z)
-        #z[list(np.indices(z.shape[:-1])) + [a]] = 1
-        return z
+        #now add some randomnes
+        u = np.random.uniform(low=0.0, high=.01, size=z.shape)
+
+        return self.npsoftmax(z+u)
+
 
     def save_Answer(self, q, a, path):
         print("saving answer")
@@ -319,4 +340,7 @@ class ABModel(object):
         normalize = tf.reduce_sum(target_exp, axis, keep_dims=True)
         softmax = target_exp / normalize
         return softmax
+
+        #if we want to use embeddings
+        #https://github.com/priyank87/memn2n
 
